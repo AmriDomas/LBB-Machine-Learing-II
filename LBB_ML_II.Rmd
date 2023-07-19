@@ -1,0 +1,387 @@
+---
+title: "LBB Machine Learning II"
+author: "Muh Amri Sidiq"
+date: "`r Sys.Date()`"
+output:   
+  html_document:
+    theme: cosmo
+    highlight: tango
+    toc: true
+    toc_float:
+      collapsed: true
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+# clear-up the environment
+rm(list = ls())
+
+# chunk options
+knitr::opts_chunk$set(
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  comment = "#>"
+)
+
+options(scipen = 999)
+```
+
+
+
+# IntroDuction 
+
+Dalam menentukan apakah nasabah mau berlangganan deposito berjangka atau tidak adalah persoalan yang akan kita selesaikan. Dalam hal ini kita akan menggunakan 3 macam type machine learning dengan prediktornya baik itu numerik maupun kategorik. Target dari prediksi kita adalah coloumn y yang isinya yes atau no, yang mempunyai arti bahwa target kita apakah akan berlangganan deposito berjangka (yes) atau tidak (no). Kita akan membandingkan kedua jenis metode dan akan menyimpulkan metode mana yang paling baik untuk digunakan pada prediksi kali ini.
+
+# Library
+
+```{r}
+library(dplyr)
+library(caret)
+library(e1071)
+library(ROCR)
+library(partykit)
+library(rsample)
+library(randomForest)
+```
+
+# Read Data & Data Understanding
+
+## Import Data
+
+Import data yang sudah kita siapkan yaitu bank.csv. Gunakan perintah read.csv sesuai dengan extension filenya
+
+```{r}
+bank <- read.csv("bank.csv")
+```
+
+## Data Inspection
+
+Kita lihat sekilas isi datanya dengan perintah Head ()
+
+```{r}
+head(bank)
+```
+
+Kita cek type datanya dengan perintah glimpse ()
+
+```{r}
+glimpse(bank)
+```
+
+Dari fungsi glimps di atas bisa kita lihat, data memiliki 4521 row dan 17 coloumns. Berikut penjelasan mengenai variable nya:
+
+ - age            :(numeric)
+ - job            :type of job 
+ - marital        :marital status
+ - education      :categorical: "unknown","secondary","primary","tertiary"
+ - default        :has credit in default? (categorical: 'no','yes','unknown')
+ - balance        :average yearly balance, in euros (numeric)
+ - housing        :has housing loan? (binary: "yes","no")
+ - loan           :has personal loan? (binary: "yes","no")
+ - contact        :contact communication type (categorical: 'cellular','telephone')
+ - day            :last contact day of the month (numeric)
+ - month          :last contact month of year (categorical: "jan", "feb", "mar", ..., "nov", "dec")
+ - duration       :last contact duration, in seconds (numeric)
+ - campaign       :number of contacts performed during this campaign and for this client
+ - pdays          :number of days that passed by after the client was last contacted from a previous                                 campaign
+ - previous       :number of contacts performed before this campaign and for this client (numeric)
+ - poutcome       :outcome of the previous marketing campaign 
+ - y              :has the client subscribed a term deposit? (binary: "yes","no")
+
+
+## Data Manipulation
+
+Kita akan merubah data sesuai yang seharusnya
+
+```{r}
+bank_clean <- bank %>% 
+  mutate_at(vars(job, marital, education, default, housing, loan, contact, month, poutcome, y), as.factor)
+glimpse(bank_clean)
+```
+
+Check Missing values
+
+```{r}
+colSums(is.na(bank_clean))
+```
+
+
+# Exploratory Data Analysis
+
+Cek persebaran/pattern data
+
+```{r}
+summary(bank_clean)
+```
+
+Insight: target yang kita cari mempunya komposisi yang jauh dari seimbang
+
+## Cross validation
+
+Kita akan membagi data train dengan data test
+
+```{r}
+RNGkind(sample.kind = "Rounding")
+set.seed(100)
+
+# your code here
+index_bank <- sample(nrow(bank_clean), nrow(bank_clean)*0.80)
+
+bank_train <- bank_clean[index_bank,] # untuk pelatihan
+bank_test <- bank_clean[-index_bank,] # untuk predict
+```
+
+cek proporsion bank_train dengan targetnya
+
+```{r}
+prop.table(table(bank_train$y))
+```
+
+Proporsi target tidak balance
+
+## Handling Imbalanced Data
+
+```{r}
+# upsampling
+RNGkind(sample.kind = "Rounding")
+set.seed(100)
+library(caret)
+
+bank_train_up <- upSample(x = bank_train %>% select(-y),
+                       y = bank_train$y,
+                       yname = "y")
+```
+
+Cek proporsi target
+```{r}
+prop.table(table(bank_train_up$y))
+```
+
+Target sudah balance
+
+# Naive Bayes
+
+Naive Bayes merupakan salah satu metode klasifikasi yang menggunakan teorema Bayes. Teorema Bayes mengatakan bahwa peluang suatu kejadian dapat berubah jika terdapat informasi yang baru.
+
+## Modeling
+
+
+```{r}
+# train
+model_nb_bank <- naiveBayes(y~., bank_train_up, laplace = 1)
+```
+
+Prediksi class dari data test dengan function predict():
+
+```{r}
+# predict class
+bank_test$pred_label <- predict(object = model_nb_bank,
+                                 newdata=bank_test,
+                                 type="class") 
+```
+
+## Model Evaluation
+
+Evaluasi model dengan confusion matrix:
+
+```{r}
+con_bank_naive <- confusionMatrix(data = bank_test$pred_label, reference=bank_test$y, positive = "yes")
+con_bank_naive
+```
+
+## ROC dan AUC
+
+ROC adalah kurva yang menggambarkan hubungan antara True Positive Rate dengan False Positive Rate pada setiap threshold. Model yang baik idealnya memiliki True Positive Rate yang tinggi dan False Positive Rate yang rendah. AUC menunjukkan luas area di bawah kurva ROC. Semakin mendekati 1, semakin baik performa model dalam memisahkan kelas positif dan negatif.
+
+kita buat kurva ROC dari model model_nb_vote. Pertama kita buat prediksi dalam bentuk peluang.
+
+```{r}
+# ambil hasil prediksi data test dalam bentuk probability
+bank_test$pred <- predict(model_nb_bank, bank_test, type="raw")
+```
+
+Siapkan data frame untuk ROC (sebenarnya opsional, namun akan mempermudah). Kita asumsi kelas positifnya adalah “yes”.
+
+```{r}
+# menyiapkan actual dalam bentuk 1 & 0
+bank_test$actual <- ifelse(bank_test$y == "yes", yes = 1, no = 0)
+```
+
+Menyiapkan objek prediction(), menghitung TPR & FPR dengan fungsi performance(), kemudian membuat kurva ROC dengan plot().
+
+```{r}
+# objek prediction
+bank_roc_pred <- prediction(predictions = bank_test$pred[,1], # prediksi yes dalam peluang
+                       labels = bank_test$actual) # label asli dalam bentuk 1 & 0
+
+# ROC curve
+plot(performance(prediction.obj = bank_roc_pred, "tpr", "fpr"))
+abline(0,1, lty=2)
+```
+
+```{r}
+# nilai AUC
+auc_pred <- performance(prediction.obj = bank_roc_pred, "auc")
+
+auc_pred@y.values # tanda @ untuk mengakases nilai dari object auc_pred
+```
+
+AUC = 0.1896296, maka dapat disimpulkan bahwa model kita kurang baik dalam memisahkan kelas yes dan no.
+
+# Decison Tree
+
+## Modeling
+
+Untuk membuat model Decision Tree, dapat digunakan fungsi ctree() dari library partykit
+
+```{r}
+bank_tree <- ctree(formula = y ~ ., data = bank_train_up,
+                   control = ctree_control(mincriterion = 0.95, 
+                                           minsplit = 100,
+                                           minbucket = 80))
+plot(bank_tree, type='simple')
+```
+
+## Model Evaluation
+
+Decision tree mempunyai karakteristik overfitting, sehingga kita tetapkan hasil acuray antara evaluasi train dan test adalah maksimal 15%
+
+```{r}
+# prediksi kelas di data train
+pred_train <- predict(bank_tree, bank_train_up, type="response")
+
+# confusion matrix data train
+tree_con_train <- confusionMatrix(pred_train, bank_train_up$y, positive = "yes")
+tree_con_train
+```
+
+```{r}
+# prediksi kelas di data test
+pred_test <- predict(bank_tree, bank_test, type="response")
+
+# confusion matrix data test
+tree_con_test <- confusionMatrix(pred_test, bank_test$y, positive = "yes")
+tree_con_test
+```
+
+Dari Sensitivity bisa kita lihat perbedaan nilai nya kurang dari 15%
+
+# Random Forest
+
+## Modeling
+
+Membuat model Random Forest menggunakan bank_train_up dengan 3-fold cross validation, kemudian proses tersebut diulang sebanyak 2 kali.
+
+```{r}
+set.seed(417)
+
+ctrl <- trainControl(method = "repeatedcv",
+                     number = 5, # k-fold
+                     repeats = 3) # repetisi
+
+bank_forest <- train(y ~ .,
+                   data = bank_train_up,
+                   method = "rf", # random forest
+                   trControl = ctrl)
+```
+
+Kita akan save dalam bentuk RDS
+
+```{r}
+saveRDS(bank_forest, file = "bank_forest.RDS")
+```
+
+Kita akan panggil model kita 
+
+```{r}
+bank_forest_f <- readRDS("bank_forest.RDS")
+bank_forest_f
+```
+
+## Out Of Bag
+
+Pada tahap Bootstrap sampling, terdapat data yang tidak digunakan dalam pembuatan model, ini yang disebut sebagai data Out-of-Bag (OOB). Model Random Forest akan menggunakan data OOB sebagai data untuk melakukan evaluasi dengan cara menghitung error (serupa dengan data test). Error inilah yang disebut OOB Error. Dalam kasus klasifikasi, OOB error merupakan persentase data OOB yang misklasifikasi.
+
+```{r}
+bank_forest_f$finalModel
+```
+
+Nilai OOB Error pada model bank_forest_f sebesar 2.62%. Dengan kata lain, akurasi model pada data OOB adalah 97.38%
+
+## Interpretation
+
+Meskipun random forest dilabel kan sebagai model yang tidak interpretable, setidaknya kita bisa melihat prediktor apa saja yang paling digunakan (penting) dalam pembuatan random forest:
+
+```{r}
+varImp(bank_forest_f) %>% plot()
+```
+
+Dari plot di atas bisa kita simpulkan prediktor duration memiliki pengaruh yang paling besar
+
+```{r}
+bank_pred_rf <- predict(bank_forest_f, bank_test)
+```
+
+```{r}
+plot(bank_pred_rf)
+```
+
+```{r}
+(conf_matrix_bank_rfor <- table(bank_pred_rf, bank_test$y))
+```
+
+```{r}
+con_bank_rf <- confusionMatrix(conf_matrix_bank_rfor, positive = "yes")
+con_bank_rf
+```
+
+# Model Evaluation Naive Bayes, Decision Tree and Random Forest
+
+```{r}
+eval_bank_naiv <- data_frame(Accuracy = con_bank_naive$overall[1],
+                                 Recall = con_bank_naive$byClass[1],
+                                 Specificity = con_bank_naive$byClass[2],
+                                 Precision = con_bank_naive$byClass[3])
+
+eval_bank_tree <- data_frame(Accuracy = tree_con_test$overall[1],
+                                 Recall = tree_con_test$byClass[1],
+                                 Specificity = tree_con_test$byClass[2],
+                                 Precision = tree_con_test$byClass[3])
+
+eval_bank_rf <- data_frame(Accuracy = con_bank_rf$overall[1],
+                                 Recall = con_bank_rf$byClass[1],
+                                 Specificity = con_bank_rf$byClass[2],
+                                 Precision = con_bank_rf$byClass[3])
+
+```
+
+```{r}
+eval_bank_naiv
+```
+
+```{r}
+eval_bank_tree
+```
+
+```{r}
+eval_bank_rf
+```
+
+Dari 3 metode di atas masing masing mempunyai keunggualn sendiri-sendiri jika di lihat dari matrixnya
+
+# Conclusion
+
+Kelas positif kita adalah yes, yang berarti nasabah sudah berlangganan deposito berjangka, sedangkan kelas negatifnya adalah no yang berarti nasabah sudah tidak berlangganan deposito berjangka. FP: memprediksi nasabah berlangganan deposito berjangka (yes), padahal nasabah tidak berlangganan deposito berjangka, resiko bank adalah bank mengalami kerugian. FN: memprediksi nasabah tidak berlangganan deposito berjangka (no), padahal berlangganan deposito berjangka, resiko bank adalah kehilangan keuntungan. Dari sisi bank, resiko yang concerning adalah FN sehingga matrix yang kita gunakan adalah Recall. Dari ke tiga cara machine leraning di atas bila kita concern sesuai matrixnya maka kita akan menggunakann machine learning type decision tree yang mempunyai Recall 87.4%.
+
+# Reference
+
+https://archive.ics.uci.edu/dataset/222/bank+marketing
+
+
+
+
+
+
+
+
